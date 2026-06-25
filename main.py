@@ -1,649 +1,613 @@
-import sqlite3
-import webbrowser
-import urllib.parse
-from datetime import datetime
 import streamlit as st
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import letter
+from datetime import datetime
+import sqlite3
+import urllib.parse
+import shutil  # Para realizar o backup do banco de dados
+import os
+
+# --- CONFIGURAÇÃO DA DATA DE INÍCIO DO TESTE ---
+DATA_INICIO_TESTE = "24/06/2026"  # Formato: DD/MM/AAAA
 
 
-# ==============================================================================
-# MÓDULO DE PAGAMENTOS (Integrado nativamente ao Streamlit)
-# ==============================================================================
-def abrir_tela_pagamento_streamlit(nome_cliente, whatsapp_cliente):
-    st.markdown("### 💳 Área de Pagamento & Comprovante")
-    st.info("Conclua o fechamento do serviço e envie o comprovante diretamente para o WhatsApp do cliente.")
+# ==========================================
+# FUNÇÕES DE INFRAESTRUTURA, BACKUP E LICENÇA
+# ==========================================
 
-    col1, col2 = st.columns(2)
-    with col1:
-        nome_pag = st.text_input("Confirmar Nome do Cliente:", value=nome_cliente, key="nome_pag")
-        forma_pagamento = st.selectbox(
-            "Selecione a Forma de Pagamento:",
-            ["Dinheiro", "Cartão de Crédito", "Cartão de Débito", "Pix", "QR Code", "Boleto Bancário"],
-            key="forma_pag"
-        )
-    with col2:
-        tel_limpo = "".join(filter(str.isdigit, whatsapp_cliente))
-        if not tel_limpo.startswith("55"):
-            tel_limpo = "55" + tel_limpo
+def gerenciar_temas():
+    """Cria um seletor na barra lateral e aplica as variações de temas via CSS"""
+    st.sidebar.markdown("<p style='font-weight: bold; margin-bottom: 5px; color: #4a5568;'>🎨 Aparência do Sistema:</p>",
+                        unsafe_allow_html=True)
 
-        telefone_pag = st.text_input("Confirmar WhatsApp:", value=tel_limpo, key="tel_pag")
-        valor_pag = st.text_input("Valor Total (R$):", value="150.00", key="val_pag")
+    # Inicializa o tema padrão caso não exista na sessão
+    if 'tema_selecionado' not in st.session_state:
+        st.session_state['tema_selecionado'] = "Azul Suave"
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    tema = st.sidebar.selectbox(
+        "Escolha o Tema",
+        ["Azul Suave", "Tema Dark", "Padrão Streamlit"],
+        label_visibility="collapsed"
+    )
+    st.session_state['tema_selecionado'] = tema
 
-    if st.button("🚀 Gerar Comprovante Oficial"):
-        if nome_pag and telefone_pag and valor_pag:
-            mensagem = (
-                f"Olá, {nome_pag}! 👋\n\n"
-                f"Aqui está o comprovante do seu serviço na *APPoficinas*:\n\n"
-                f"💰 *Valor:* R$ {valor_pag}\n"
-                f"💳 *Forma de Pagamento:* {forma_pagamento}\n\n"
-                f"Obrigado pela preferência! 🚗🔧"
+    # CSS Global para remover a barra branca do topo em qualquer tema customizado
+    st.markdown("""
+        <style>
+            header[data-testid="stHeader"] {
+                background: rgba(0,0,0,0) !important;
+                background-color: transparent !important;
+            }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # Aplicação dos estilos CSS baseados na escolha
+    if tema == "Azul Suave":
+        st.markdown("""
+            <style>
+                .stApp { background-color: #F0F4F8; }
+                [data-testid="stSidebar"] { background-color: #D9E2EC; }
+                .stTextInput>div>div>input, .stTextArea>div>div>textarea, .stSelectbox>div>div {
+                    background-color: #FFFFFF !important; color: #102A43 !important;
+                }
+                .stExpander {
+                    background-color: #FFFFFF !important; border: 1px solid #BCCCDC !important;
+                    border-radius: 6px; margin-bottom: 8px;
+                }
+                h1, h2, h3, p, label, span, .stMarkdown { color: #102A43; }
+                /* Garante texto legível no botão Sair */
+                [data-testid="stSidebar"] .stButton>button {
+                    color: #102A43 !important;
+                }
+            </style>
+        """, unsafe_allow_html=True)
+
+    elif tema == "Tema Dark":
+        st.markdown("""
+            <style>
+                .stApp { background-color: #0E1117; }
+                [data-testid="stSidebar"] { background-color: #1E222B; }
+                .stTextInput>div>div>input, .stTextArea>div>div>textarea, .stSelectbox>div>div {
+                    background-color: #262730 !important; color: #FAFAFA !important;
+                    border: 1px solid #4A5568 !important;
+                }
+                .stExpander {
+                    background-color: #1E222B !important; border: 1px solid #4A5568 !important;
+                    border-radius: 6px; margin-bottom: 8px;
+                }
+                h1, h2, h3, p, label, span, .stMarkdown { color: #FAFAFA; }
+                div[data-testid="stMetricValue"] { color: #1E90FF !important; }
+                /* Corrige o texto branco sobre botão branco no menu Dark */
+                [data-testid="stSidebar"] .stButton>button {
+                    color: #0E1117 !important;
+                    font-weight: bold;
+                }
+            </style>
+        """, unsafe_allow_html=True)
+
+    elif tema == "Padrão Streamlit":
+        pass
+
+
+def gerenciar_banco_nuvem():
+    """Painel lateral para baixar e restaurar o banco de dados na nuvem"""
+    st.sidebar.markdown("---")
+    st.sidebar.markdown(
+        "<p style='font-weight: bold; margin-bottom: 5px; color: #4a5568;'>💾 Gestão de Dados (Nuvem):</p>",
+        unsafe_allow_html=True)
+
+    # 1. Botão para Baixar o Banco de Dados Atual
+    if os.path.exists("oficina.db"):
+        with open("oficina.db", "rb") as f:
+            st.sidebar.download_button(
+                label="📥 Baixar Cópia do Banco (.db)",
+                data=f,
+                file_name="oficina.db",
+                mime="application/x-sqlite3",
+                use_container_width=True
             )
-            mensagem_codificada = urllib.parse.quote(mensagem)
-            url_link = f"https://wa.me/{telefone_pag}?text={mensagem_codificada}"
 
-            st.markdown(
-                f'<a href="{url_link}" target="_blank" style="text-decoration: none;">'
-                f'<div style="background-color: #25d366; color: white; padding: 15px 20px; '
-                f'border-radius: 8px; font-weight: bold; text-align: center; margin-top: 10px; '
-                f'cursor: pointer; box-shadow: 0px 4px 6px rgba(0,0,0,0.1); font-size: 14pt;">'
-                f'💬 Clique Aqui para Abrir e Enviar no WhatsApp'
-                f'</div></a>',
-                unsafe_allow_html=True
-            )
-            st.success("Link do comprovante gerado! Clique no botão verde acima para enviar.")
-        else:
-            st.error("⚠️ Por favor, preencha todos os campos da área de pagamento.")
-
-
-# ==============================================================================
-# CONFIGURAÇÃO E INTERFACE PRINCIPAL DO APP
-# ==============================================================================
-
-st.set_page_config(page_title="Oficina Pro", page_icon="🛠️", layout="wide")
-
-# --- ESTILO CSS CUSTOMIZADO UNIFICADO ---
-st.markdown("""
-    <style>
-        html, body, [class*="css"], p, label, input, select, textarea { font-size: 12pt !important; }
-
-        /* Botões Padrão do Sistema */
-        div.stButton > button {
-            font-size: 12pt !important; border-radius: 8px !important;
-            background-color: #3182ce !important; color: white !important;
-            border: none !important; padding: 8px 20px !important;
-            transition: all 0.3s ease !important; font-weight: bold !important;
-            box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1) !important;
-        }
-        div.stButton > button:hover {
-            background-color: #2b6cb0 !important; transform: translateY(-2px) !important;
-            box-shadow: 0px 6px 12px rgba(49, 130, 206, 0.3) !important;
-        }
-
-        /* --- PADRONIZAÇÃO COMPLETA DAS ABAS (TODAS AS TELAS) --- */
-        button[data-baseweb="tab"] {
-            background-color: #f0f4f8 !important;
-            color: #4a5568 !important;
-            border-radius: 8px 8px 0px 0px !important;
-            padding: 10px 20px !important;
-            margin-right: 6px !important;
-            border: 1px solid #e2e8f0 !important;
-            border-bottom: none !important;
-            transition: all 0.2s ease-in-out !important;
-            font-weight: 500 !important;
-        }
-
-        button[data-baseweb="tab"]:hover {
-            background-color: #e2e8f0 !important;
-            color: #2b6cb0 !important;
-            cursor: pointer;
-        }
-
-        button[data-baseweb="tab"][aria-selected="true"] {
-            background-color: #ebf8ff !important;
-            color: #2b6cb0 !important;
-            font-weight: bold !important;
-            border: 2px solid #bee3f8 !important;
-            border-bottom: none !important;
-        }
-    </style>
-""", unsafe_allow_html=True)
-
-
-# --- BANCO DE DADOS ---
-def conectar_banco():
-    return sqlite3.connect('oficina.db')
+    # 2. Campo para Restaurar o Banco de Dados (Upload)
+    arquivo_enviado = st.sidebar.file_uploader("Restaurar Banco de Dados", type=["db"], label_visibility="collapsed")
+    if arquivo_enviado is not None:
+        try:
+            with open("oficina.db", "wb") as f:
+                f.write(arquivo_enviado.getbuffer())
+            st.sidebar.success("✅ Banco restaurado! Atualizando...")
+            st.rerun()
+        except Exception as e:
+            st.sidebar.error(f"Erro ao restaurar: {e}")
 
 
 def criar_banco_de_dados():
-    conexao = conectar_banco()
-    cursor = conexao.cursor()
-    # Adicionada a coluna criado_por para segurança de dados por usuário
-    cursor.execute('''
-                   CREATE TABLE IF NOT EXISTS clientes
-                   (
-                       id
-                       INTEGER
-                       PRIMARY
-                       KEY
-                       AUTOINCREMENT,
-                       nome
-                       TEXT
-                       NOT
-                       NULL,
-                       tipo_documento
-                       TEXT,
-                       documento
-                       TEXT,
-                       whatsapp
-                       TEXT
-                       NOT
-                       NULL,
-                       email
-                       TEXT,
-                       cidade
-                       TEXT,
-                       endereco
-                       TEXT,
-                       criado_por
-                       TEXT
-                       DEFAULT
-                       'admin'
-                   )
-                   ''')
+    """Cria o banco de dados e as tabelas se não existirem"""
+    conn = sqlite3.connect("oficina.db")
+    cursor = conn.cursor()
 
-    # Atualização de segurança para bancos de dados já criados anteriormente
+    # 1. Tabela de usuários (Login)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            usuario TEXT UNIQUE,
+            senha TEXT
+        )
+    """)
+
+    # Inserir o usuário padrão se a tabela estiver vazia
+    cursor.execute("SELECT COUNT(*) FROM usuarios")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO usuarios (usuario, senha) VALUES ('admin', 'admin')")
+
+    # 2. Tabela de Veículos e Clientes integrada
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS veiculos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            placa TEXT UNIQUE,
+            marca TEXT,
+            modelo TEXT,
+            ano TEXT,
+            cor TEXT,
+            combustivel TEXT,
+            km_atual INTEGER,
+            nome_cliente TEXT,
+            whatsapp TEXT,
+            cpf TEXT,
+            endereco TEXT,
+            observacoes TEXT,
+            data_cadastro TEXT
+        )
+    """)
+
+    # 3. Tabela de Ordens de Serviço (O.S.)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ordens_servico (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_veiculo INTEGER,
+            defeito_reclamado TEXT,
+            servico_realizado TEXT,
+            pecas_utilizadas TEXT,
+            valor_mao_obra REAL,
+            valor_pecas REAL,
+            valor_total REAL,
+            status TEXT,
+            data_abertura TEXT,
+            forma_pagamento TEXT,
+            status_pagamento TEXT,
+            data_pagamento TEXT,
+            FOREIGN KEY(id_veiculo) REFERENCES veiculos(id)
+        )
+    """)
+
+    # 4. Tabela: Estoque de Peças
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pecas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            codigo_barras TEXT UNIQUE,
+            nome_peca TEXT,
+            quantidade_estoque INTEGER,
+            preco_venda REAL,
+            foto_peca BLOB,
+            data_cadastro TEXT
+        )
+    """)
+
+    # Verificação de segurança para colunas financeiras
     try:
-        cursor.execute("ALTER TABLE clientes ADD COLUMN criado_por TEXT DEFAULT 'admin'")
+        cursor.execute("ALTER TABLE ordens_servico ADD COLUMN forma_pagamento TEXT")
+        cursor.execute("ALTER TABLE ordens_servico ADD COLUMN status_pagamento TEXT")
+        cursor.execute("ALTER TABLE ordens_servico ADD COLUMN data_pagamento TEXT")
     except sqlite3.OperationalError:
-        pass  # A coluna já existe
+        pass
 
-    cursor.execute('''
-                   CREATE TABLE IF NOT EXISTS veiculos
-                   (
-                       id
-                       INTEGER
-                       PRIMARY
-                       KEY
-                       AUTOINCREMENT,
-                       cliente_id
-                       INTEGER
-                       NOT
-                       NULL,
-                       marca
-                       TEXT
-                       NOT
-                       NULL,
-                       modelo
-                       TEXT
-                       NOT
-                       NULL,
-                       placa
-                       TEXT
-                       NOT
-                       NULL
-                       UNIQUE,
-                       ano_fabricacao
-                       TEXT,
-                       motorizacao
-                       TEXT,
-                       cor
-                       TEXT,
-                       km
-                       INTEGER,
-                       checklist_arranha
-                       TEXT,
-                       checklist_estepe
-                       TEXT,
-                       nivel_combustivel
-                       TEXT,
-                       FOREIGN
-                       KEY
-                   (
-                       cliente_id
-                   ) REFERENCES clientes
-                   (
-                       id
-                   ))
-                   ''')
-    cursor.execute('''
-                   CREATE TABLE IF NOT EXISTS ordens_servico
-                   (
-                       id
-                       INTEGER
-                       PRIMARY
-                       KEY
-                       AUTOINCREMENT,
-                       veiculo_id
-                       INTEGER
-                       NOT
-                       NULL,
-                       mecanico_responsavel
-                       TEXT,
-                       descricao_defeito
-                       TEXT,
-                       status
-                       TEXT
-                       NOT
-                       NULL
-                       DEFAULT
-                       "Aguardando Orçamento",
-                       data_inicio
-                       TEXT,
-                       data_fim
-                       TEXT,
-                       valor_total
-                       REAL
-                       DEFAULT
-                       0.0,
-                       FOREIGN
-                       KEY
-                   (
-                       veiculo_id
-                   ) REFERENCES veiculos
-                   (
-                       id
-                   ))
-                   ''')
-    cursor.execute('''
-                   CREATE TABLE IF NOT EXISTS itens_os
-                   (
-                       id
-                       INTEGER
-                       PRIMARY
-                       KEY
-                       AUTOINCREMENT,
-                       os_id
-                       INTEGER
-                       NOT
-                       NULL,
-                       tipo
-                       TEXT
-                       NOT
-                       NULL,
-                       descricao
-                       TEXT
-                       NOT
-                       NULL,
-                       quantidade
-                       INTEGER
-                       NOT
-                       NULL
-                       DEFAULT
-                       1,
-                       preco_unitario
-                       REAL
-                       NOT
-                       NULL,
-                       FOREIGN
-                       KEY
-                   (
-                       os_id
-                   ) REFERENCES ordens_servico
-                   (
-                       id
-                   ))
-                   ''')
-    conexao.commit()
-    conexao.close()
+    conn.commit()
+    conn.close()
 
 
-def listar_clientes(usuario_ativo):
-    conexao = conectar_banco()
-    cursor = conexao.cursor()
-    # Se for o usuário comum, ele só puxa os clientes que ele mesmo cadastrou
-    if usuario_ativo == "usu":
-        cursor.execute('SELECT id, nome FROM clientes WHERE criado_por = ?', (usuario_ativo,))
-    else:
-        cursor.execute('SELECT id, nome FROM clientes')
-    dados = cursor.fetchall()
-    conexao.close()
-    return dados
+def realizar_backup():
+    """Gera uma cópia de segurança do banco de dados na pasta 'backups'"""
+    try:
+        if not os.path.exists("oficina.db"):
+            return None
+
+        if not os.path.exists("backups"):
+            os.makedirs("backups")
+
+        data_hora = datetime.now().strftime("%Y%m%d_%H%M%S")
+        nome_backup = f"backups/oficina_backup_{data_hora}.db"
+        shutil.copy2("oficina.db", nome_backup)
+        return nome_backup
+    except Exception as e:
+        st.error(f"⚠️ Falha ao gerar backup: {e}")
+        return None
 
 
-def buscar_resumo_os(os_id):
-    conexao = conectar_banco()
-    cursor = conexao.cursor()
-    cursor.execute('''
-                   SELECT os.id,
-                          os.mecanico_responsavel,
-                          os.descricao_defeito,
-                          os.status,
-                          os.data_inicio,
-                          os.data_fim,
-                          os.valor_total,
-                          v.modelo,
-                          v.placa,
-                          c.nome,
-                          c.whatsapp
-                   FROM ordens_servico os
-                            JOIN veiculos v ON os.veiculo_id = v.id
-                            JOIN clientes c ON v.cliente_id = c.id
-                   WHERE os.id = ?
-                   ''', (os_id,))
-    os_dados = cursor.fetchone()
-    cursor.execute('SELECT tipo, descricao, quantidade, preco_unitario FROM itens_os WHERE os_id = ?', (os_id,))
-    itens = cursor.fetchall()
-    conexao.close()
-    return os_dados, itens
+def verificar_licenca():
+    """Retorna (bloqueado, dias_restantes)"""
+    try:
+        data_inicio = datetime.strptime(DATA_INICIO_TESTE, "%d/%m/%Y")
+        data_atual = datetime.now()
+        dias_passados = (data_atual - data_inicio).days
+        dias_restantes = 30 - dias_passados
+
+        if dias_restantes <= 0:
+            return True, 0
+        return False, dias_restantes
+    except Exception:
+        return True, 0
 
 
-def gerar_recibo_pdf(os_id):
-    dados, itens = buscar_resumo_os(os_id)
-    if not dados: return
-    id_os, mecanico, defeito, status, dt_inicio, dt_fim, total, modelo, placa, cliente_nome, whatsapp = dados
-    nome_arquivo = f"Recibo_OS_{id_os}.pdf"
-    pdf = canvas.Canvas(nome_arquivo, pagesize=letter)
-    pdf.setFont("Helvetica-Bold", 16)
-    pdf.drawString(50, 750, "SISTEMA OFICINA PRO - RECIBO")
-    pdf.setFont("Helvetica", 10)
-    pdf.drawString(50, 730, f"Cliente: {cliente_nome} | Veículo: {modelo} ({placa})")
-    pdf.drawString(50, 715, f"OS #: {id_os} | Status: {status} | Total: R$ {total:.2f}")
-    pdf.save()
-
-
-def enviar_whatsapp_tela(os_id, tipo_mensagem):
-    dados, _ = buscar_resumo_os(os_id)
-    if not dados: return
-    id_os, _, defeito, _, _, _, total, modelo, placa, cliente_nome, whatsapp = dados
-    telefone = "".join(filter(str.isdigit, whatsapp))
-    if tipo_mensagem == "orcamento":
-        texto = f"Olá *{cliente_nome}*! O orçamento do seu *{modelo}* ({placa}) ficou em *R$ {total:.2f}*. Pode aprovar?"
-    else:
-        texto = f"Olá *{cliente_nome}*! O seu *{modelo}* ({placa}) já está PRONTO! 🎉 Total: *R$ {total:.2f}*."
-    texto_codificado = urllib.parse.quote(texto)
-    link = f"https://api.whatsapp.com/send?phone=55{telefone}&text={texto_codificado}"
-    webbrowser.open(link)
-
-
-# --- SISTEMA DE AUTENTICAÇÃO (LOGIN) ---
 def tela_login():
-    st.markdown("<h2 style='text-align: center;'>🛠️ Login - Sistema Oficina Pro</h2>", unsafe_allow_html=True)
+    """Exibe o formulário de login"""
+    st.subheader("🔑 Acesso ao Sistema")
+    usuario = st.text_input("Usuário")
+    senha = st.text_input("Senha", type="password")
 
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        with st.form("form_login"):
-            usuario = st.text_input("Usuário:")
-            senha = st.text_input("Senha:", type="password")
-            btn_entrar = st.form_submit_button("Entrar no Sistema")
+    if st.button("Entrar", use_container_width=True):
+        conn = sqlite3.connect("oficina.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM usuarios WHERE usuario = ? AND senha = ?", (usuario, senha))
+        user_exists = cursor.fetchone()
+        conn.close()
 
-            if btn_entrar:
-                if usuario == "admin" and senha == "admin":
-                    st.session_state['logado'] = True
-                    st.session_state['usuario_ativo'] = "admin"
-                    st.rerun()
-                elif usuario == "usu" and senha == "usu":
-                    st.session_state['logado'] = True
-                    st.session_state['usuario_ativo'] = "usu"
-                    st.rerun()
-                else:
-                    st.error("❌ Usuário ou senha incorretos.")
+        if user_exists:
+            st.session_state['logado'] = True
+            st.session_state['usuario_ativo'] = usuario
+            st.success("Logado com sucesso!")
+            st.rerun()
+        else:
+            st.error("Usuário ou senha incorretos.")
 
 
-# --- DIRECIONAMENTO PRINCIPAL ---
+def formatar_real(valor):
+    """Auxiliar para formatar floats no padrão R$ 1.234,56"""
+    if valor is None:
+        valor = 0.0
+    return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+# ==========================================
+# DIRECIONAMENTO PRINCIPAL (MAIN)
+# ==========================================
+
 def main():
     criar_banco_de_dados()
 
-    # Gerencia o estado de Login do app
+    bloqueado, dias_restantes = verificar_licenca()
+
+    if bloqueado:
+        st.markdown("<br><br><br>", unsafe_allow_html=True)
+        st.error("❌ **PERÍODO DE AVALIAÇÃO EXPIRADO**")
+        st.markdown("""
+            <div style='text-align: center; padding: 20px; border: 2px solid #fc8181; border-radius: 8px; background-color: #fff5f5;'>
+                <h3 style='color: #c53030;'>O período de 30 dias de demonstração deste aplicativo chegou ao fim.</h3>
+                <p style='font-size: 13pt;'>Para liberar o acesso definitivo ao sistema entre em contato.</p>
+                <br>
+                <a href='https://wa.me/5513922028978' target='_blank' style='text-decoration: none;'>
+                    <div style='background-color: #25d366; color: white; padding: 12px 25px; border-radius: 8px; font-weight: bold; display: inline-block;'>
+                        💬 Chamar no WhatsApp para Ativar Licença
+                    </div>
+                </a>
+            </div>
+        """, unsafe_allow_html=True)
+        return
+
     if 'logado' not in st.session_state or not st.session_state['logado']:
+        gerenciar_temas()
+        st.sidebar.markdown("---")
         tela_login()
         return
 
-    # Se estiver logado, carrega o painel correspondente
     user = st.session_state['usuario_ativo']
 
-    # Barra lateral customizada com botão de Logout
-    st.sidebar.markdown(f"👤 Conectado como: **{user.upper()}**")
-    if st.sidebar.button("🚪 Sair (Logout)"):
+    # Barra lateral fixa - Identificação e Temas
+    st.sidebar.markdown(f"👤 Operador: **{user.upper()}**")
+    st.sidebar.info(f"⏳ Teste Demo: **{dias_restantes} dias restantes**")
+
+    # Chama o gerenciador de visual na barra lateral
+    gerenciar_temas()
+
+    if st.sidebar.button("🚪 Sair (Logout)", use_container_width=True):
         st.session_state['logado'] = False
-        st.session_state.pop('cliente_atual_nome', None)
-        st.session_state.pop('cliente_atual_whats', None)
         st.rerun()
 
     st.sidebar.markdown("---")
+    st.sidebar.markdown("<p style='font-weight: bold; margin-bottom: 5px; color: #4a5568;'>Menu Principal:</p>",
+                        unsafe_allow_html=True)
 
-    # Definição de telas com base no tipo de usuário (usuário comum não vê Relatórios)
-    opcoes_menu = ["👥 Cadastrar Cliente", "🚗 Entrada de Veículo", "📋 Painel de OS"]
-    if user == "admin":
-        opcoes_menu.append("📊 Relatório Excel")
+    if 'menu_ativo' not in st.session_state:
+        st.session_state['menu_ativo'] = "📋 Ordens de Serviço"
 
-    opcao = st.sidebar.radio("Escolha uma Tela:", opcoes_menu)
+    if st.sidebar.button("📋 Ordens de Serviço", use_container_width=True,
+                         type="secondary" if st.session_state['menu_ativo'] != "📋 Ordens de Serviço" else "primary"):
+        st.session_state['menu_ativo'] = "📋 Ordens de Serviço"
+        st.rerun()
 
-    # --- TELA 1: CADASTRO COMPLETO DO CLIENTE ---
-    if opcao == "👥 Cadastrar Cliente":
-        st.subheader("Gerenciamento de Clientes")
+    if st.sidebar.button("🚗 Cadastrar Veículo", use_container_width=True,
+                         type="secondary" if st.session_state['menu_ativo'] != "🚗 Cadastrar Veículo" else "primary"):
+        st.session_state['menu_ativo'] = "🚗 Cadastrar Veículo"
+        st.rerun()
 
-        aba_cadastro, aba_pagamento = st.tabs(["📝 Formulário de Cadastro", "💳 Fechamento & Pagamento"])
+    if st.sidebar.button("📦 Estoque de Peças", use_container_width=True,
+                         type="secondary" if st.session_state['menu_ativo'] != "📦 Estoque de Peças" else "primary"):
+        st.session_state['menu_ativo'] = "📦 Estoque de Peças"
+        st.rerun()
 
-        with aba_cadastro:
-            with st.form("form_cliente", clear_on_submit=False):
-                salvar = st.form_submit_button("💾 Salvar Novo Cliente")
-                st.markdown("<br>", unsafe_allow_html=True)
+    if st.sidebar.button("💰 Efetivar Pagamento", use_container_width=True,
+                         type="secondary" if st.session_state['menu_ativo'] != "💰 Efetivar Pagamento" else "primary"):
+        st.session_state['menu_ativo'] = "💰 Efetivar Pagamento"
+        st.rerun()
 
-                col1, col2 = st.columns(2)
-                with col1:
-                    nome = st.text_input("Nome Completo / Razão Social *")
-                    tipo_doc = st.selectbox("Tipo de Documento", ["CPF", "CNPJ"])
-                    documento = st.text_input("Número do Documento (Apenas números)")
-                    whatsapp = st.text_input("WhatsApp (com DDD, apenas números) *", placeholder="11999998888")
-                with col2:
-                    email = st.text_input("E-mail", placeholder="exemplo@email.com")
-                    cidade = st.text_input("Cidade / Estado", placeholder="Ex: São Paulo - SP")
-                    endereco = st.text_input("Endereço Completo (Rua, Nº, Bairro)")
+    if st.sidebar.button("📊 Relatórios & Caixa", use_container_width=True,
+                         type="secondary" if st.session_state['menu_ativo'] != "📊 Relatórios" else "primary"):
+        st.session_state['menu_ativo'] = "📊 Relatórios"
+        st.rerun()
 
-            if salvar:
-                if nome and whatsapp:
-                    conexao = conectar_banco()
-                    cursor = conexao.cursor()
-                    # Salva identificando quem foi o usuário que criou o registro
-                    cursor.execute('''
-                                   INSERT INTO clientes (nome, tipo_documento, documento, whatsapp, email, cidade,
-                                                         endereco, criado_por)
-                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                   ''', (nome, tipo_doc, documento, whatsapp, email, cidade, endereco, user))
-                    conexao.commit()
-                    conexao.close()
-                    st.success(
-                        f"✅ Cliente '{nome}' cadastrado com sucesso! Mude para a aba 'Fechamento & Pagamento' no topo.")
-                    st.session_state['cliente_atual_nome'] = nome
-                    st.session_state['cliente_atual_whats'] = whatsapp
-                else:
-                    st.error("⚠️ Preencha os campos obrigatórios (Nome e WhatsApp).")
+    # Chama o painel de segurança de dados na nuvem logo abaixo do menu principal
+    gerenciar_banco_nuvem()
 
-        with aba_pagamento:
-            if 'cliente_atual_nome' in st.session_state:
-                abrir_tela_pagamento_streamlit(st.session_state['cliente_atual_nome'],
-                                               st.session_state['cliente_atual_whats'])
-            else:
-                st.info("ℹ️ Preencha e salve o cadastro na primeira aba para liberar o fechamento financeiro.")
+    menu = st.session_state['menu_ativo']
 
-    # --- TELA 2: ENTRADA DE VEÍCULO ---
-    elif opcao == "🚗 Entrada de Veículo":
-        st.subheader("Registro de Entrada de Veículo & Checklist")
-        clientes = listar_clientes(user)  # Filtra conforme o nível do usuário
-        if not clientes:
-            st.warning("⚠️ Nossos registros não apontam clientes cadastrados por você para vincular a este veículo.")
-        else:
-            lista_clientes_formatada = {c[1]: c[0] for c in clientes}
-            cliente_selecionado = st.selectbox("Selecione o Dono do Veículo:", list(lista_clientes_formatada.keys()))
+    # ==========================================
+    # ABA: GERENCIAMENTO DE ORDENS DE SERVIÇO
+    # ==========================================
+    if menu == "📋 Ordens de Serviço":
+        st.title("📋 Abertura de Ordens de Serviço")
+        termo_busca = st.text_input("🔍 Buscar veículo por Placa ou Cliente").strip().upper()
+        veiculo_selecioncionado = None
 
-            with st.form("form_veiculo", clear_on_submit=True):
-                btn_salvar_veiculo = st.form_submit_button("⚙️ Registrar Entrada e Abrir OS")
-                st.markdown("<br>", unsafe_allow_html=True)
+        if termo_busca:
+            conn = sqlite3.connect("oficina.db")
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, placa, marca, modelo, nome_cliente, whatsapp FROM veiculos WHERE placa LIKE ? OR nome_cliente LIKE ?",
+                (f"%{termo_busca}%", f"%{termo_busca}%"))
+            resultados = cursor.fetchall()
+            conn.close()
 
-                aba_ficha, aba_checklist, aba_triagem = st.tabs(
-                    ["🚘 Ficha Técnica", "📋 Checklist de Inspeção", "🔧 Triagem Inicial"])
+            if resultados:
+                opcoes_veiculos = {f"{r[1]} - {r[2]} {r[3]} (Dono: {r[4]})": r for r in resultados}
+                escolha = st.selectbox("Selecione o veículo:", list(opcoes_veiculos.keys()))
+                veiculo_selecioncionado = opcoes_veiculos[escolha]
 
-                with aba_ficha:
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        marca = st.text_input("Marca (Ex: Fiat, Volkswagen) *")
-                        modelo = st.text_input("Modelo do Carro (Ex: Uno, Gol) *")
-                    with col2:
-                        placa = st.text_input("Placa *").upper()
-                        ano_fabricacao = st.text_input("Ano de Fabricação (Ex: 2018/2019) *")
-                    with col3:
-                        motorizacao = st.text_input("Motorização (Ex: 1.0, 1.6, 2.0 Turbo)")
-                        cor = st.text_input("Cor do Veículo")
-                    km = st.number_input("Quilometragem (KM) Atual:", min_value=0, step=1)
+        if veiculo_selecioncionado:
+            id_veiculo, placa_v, marca_v, modelo_v, cliente_v, whats_v = veiculo_selecioncionado
+            st.info(f"🚗 **Veículo:** {marca_v} {modelo_v} ({placa_v}) | **Cliente:** {cliente_v}")
 
-                with aba_checklist:
-                    col_ch1, col_ch2, col_ch3 = st.columns(3)
-                    with col_ch1:
-                        checklist_arranha = st.selectbox("Possui Arranhões ou Amassados?",
-                                                         ["Não", "Sim (Descrever na triagem)"])
-                    with col_ch2:
-                        checklist_estepe = st.selectbox("O Estepe está no veículo?", ["Sim", "Não"])
-                    with col_ch3:
-                        nivel_combustivel = st.selectbox("Nível do Combustível:",
-                                                         ["Vazio", "1/4", "1/2", "3/4", "Cheio"])
+            with st.form("form_nova_os"):
+                defeito = st.text_area("Defeito Reclamado")
+                servico = st.text_area("Serviço a ser Realizado")
+                pecas = st.text_area("Peças Necessárias")
+                col_v1, col_v2, col_v3 = st.columns(3)
+                with col_v1:
+                    v_mao_obra = st.number_input("Mão de Obra (R$)", min_value=0.0, format="%.2f")
+                with col_v2:
+                    v_pecas = st.number_input("Total Peças (R$)", min_value=0.0, format="%.2f")
+                with col_v3:
+                    status_os = st.selectbox("Status", ["Orçamento", "Em Andamento", "Pronto"])
 
-                with aba_triagem:
-                    defeito = st.text_area("Reclamação / Defeito Relatado pelo Cliente *")
-                    mecanico = st.text_input("Mecânico Responsável pela Triagem")
+                if st.form_submit_button("🛠️ Salvar Ordem de Serviço", use_container_width=True):
+                    if defeito:
+                        conn = sqlite3.connect("oficina.db")
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            INSERT INTO ordens_servico (id_veiculo, defeito_reclamado, servico_realizado, pecas_utilizadas, valor_mao_obra, valor_pecas, valor_total, status, data_abertura, status_pagamento)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendente')
+                        """, (id_veiculo, defeito, servico, pecas, v_mao_obra, v_pecas, (v_mao_obra + v_pecas),
+                              status_os, datetime.now().strftime("%d/%m/%Y %H:%M")))
+                        conn.commit()
+                        conn.close()
+                        st.success("✅ Ordem de Serviço cadastrada com sucesso!")
 
-            if btn_salvar_veiculo:
-                if marca and modelo and placa and ano_fabricacao and defeito:
-                    id_cliente = lista_clientes_formatada[cliente_selecionado]
-                    conexao = conectar_banco()
-                    cursor = conexao.cursor()
-                    cursor.execute('''
-                                   INSERT INTO veiculos (cliente_id, marca, modelo, placa, ano_fabricacao,
-                                                         motorizacao, cor, km, checklist_arranha, checklist_estepe,
-                                                         nivel_combustivel)
-                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                   ''', (id_cliente, marca, modelo, placa, ano_fabricacao, motorizacao, cor, km,
-                                         checklist_arranha, checklist_estepe, nivel_combustivel))
-                    id_veiculo = cursor.lastrowid
+
+    # ==========================================
+    # ABA: CADASTRAR VEÍCULO
+    # ==========================================
+    elif menu == "🚗 Cadastrar Veículo":
+        st.title("🚗 Cadastro de Veículos e Clientes")
+        with st.form("form_cadastro_veiculo", clear_on_submit=True):
+            placa = st.text_input("Placa").upper().strip()
+            marca = st.selectbox("Marca",
+                                 ["Chevrolet", "Fiat", "Ford", "Volkswagen", "Toyota", "Honda", "Hyundai", "Renault",
+                                  "Outra"])
+            modelo = st.text_input("Modelo")
+            nome_cliente = st.text_input("Nome do Cliente")
+            whatsapp = st.text_input("WhatsApp (com DDD)")
+
+            if st.form_submit_button("💾 Salvar Cadastro", use_container_width=True):
+                if placa and modelo and nome_cliente:
+                    try:
+                        conn = sqlite3.connect("oficina.db")
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            INSERT INTO veiculos (placa, marca, modelo, nome_cliente, whatsapp, data_cadastro)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (placa, marca, modelo, nome_cliente, whatsapp, datetime.now().strftime("%d/%m/%Y")))
+                        conn.commit()
+                        conn.close()
+                        st.success("✅ Cliente e veículo registrados!")
+                    except sqlite3.IntegrityError:
+                        st.error("❌ Placa já cadastrada.")
+
+
+    # ==========================================
+    # ABA: ESTOQUE DE PEÇAS
+    # ==========================================
+    elif menu == "📦 Estoque de Peças":
+        st.title("📦 Controle de Estoque")
+        with st.form("form_peca", clear_on_submit=True):
+            c_barras = st.text_input("Código de Barras")
+            n_peca = st.text_input("Nome da Peça")
+            qtd = st.number_input("Quantidade", min_value=1)
+            preco = st.number_input("Preço de Venda (R$)", min_value=0.0, format="%.2f")
+            if st.form_submit_button("📥 Cadastrar Peça"):
+                if c_barras and n_peca:
+                    conn = sqlite3.connect("oficina.db")
+                    cursor = conn.cursor()
                     cursor.execute(
-                        'INSERT INTO ordens_servico (veiculo_id, descricao_defeito, mecanico_responsavel, data_inicio) VALUES (?, ?, ?, ?)',
-                        (id_veiculo, defeito, mecanico, datetime.now().strftime('%d/%m/%Y %H:%M:%S')))
-                    conexao.commit()
-                    conexao.close()
-                    st.success(f"🚗 {marca} {modelo} ({placa}) registrado e OS aberta com sucesso!")
-                else:
-                    st.error("⚠️ Preencha todos os campos obrigatórios.")
+                        "INSERT INTO pecas (codigo_barras, nome_peca, quantidade_estoque, preco_venda, data_cadastro) VALUES (?, ?, ?, ?, ?)",
+                        (c_barras, n_peca, qtd, preco, datetime.now().strftime("%d/%m/%Y")))
+                    conn.commit()
+                    conn.close()
+                    st.success("Peça cadastrada!")
 
-    # --- TELA 3: PAINEL DE OS ---
-    elif opcao == "📋 Painel de OS":
-        st.subheader("Gerenciamento de Ordens de Serviço (OS)")
-        conexao = conectar_banco()
-        cursor = conexao.cursor()
 
-        # Filtro de segurança: 'usu' só visualiza ordens vinculadas aos clientes dele
-        if user == "usu":
-            cursor.execute('''
-                           SELECT os.id, c.nome, v.modelo, os.status, os.valor_total
-                           FROM ordens_servico os
-                                    JOIN veiculos v ON os.veiculo_id = v.id
-                                    JOIN clientes c ON v.cliente_id = c.id
-                           WHERE c.criado_por = ?
-                           ''', (user,))
+    # ==========================================
+    # ABA: 💰 EFETIVAR PAGAMENTO E ENVIAR WHATSAPP
+    # ==========================================
+    elif menu == "💰 Efetivar Pagamento":
+        st.title("💰 Terminal de Efetivação Expressa")
+        st.write(
+            "Selecione uma ordem pendente para aplicar o pagamento, realizar o backup automático e enviar o recibo no WhatsApp.")
+
+        conn = sqlite3.connect("oficina.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT os.id, v.placa, v.nome_cliente, os.valor_total, v.whatsapp, v.modelo, os.valor_mao_obra, os.valor_pecas
+            FROM ordens_servico os
+            JOIN veiculos v ON os.id_veiculo = v.id
+            WHERE os.status_pagamento != 'Pago' OR os.status_pagamento IS NULL
+            ORDER BY os.id DESC
+        """)
+        pendentes = cursor.fetchall()
+        conn.close()
+
+        if not pendentes and 'pagamento_sucesso' not in st.session_state:
+            st.success("🎉 Todas as ordens de serviço encontram-se pagas!")
         else:
-            cursor.execute('''
-                           SELECT os.id, c.nome, v.modelo, os.status, os.valor_total
-                           FROM ordens_servico os
-                                    JOIN veiculos v ON os.veiculo_id = v.id
-                                    JOIN clientes c ON v.cliente_id = c.id
-                           ''')
+            if 'pagamento_sucesso' not in st.session_state:
+                opcoes_pendentes = {
+                    f"O.S. N° {p[0]} | {p[1]} - {p[2]} (Valor: {formatar_real(p[3])})": p
+                    for p in pendentes
+                }
 
+                escolha_os = st.selectbox("Selecione a O.S. para Baixa Financeira:", list(opcoes_pendentes.keys()))
+                os_sel = opcoes_pendentes[escolha_os]
+                id_os, placa, cliente, valor_total, whats_cliente, modelo_v, m_obra, v_pecas = os_sel
+
+                st.markdown("---")
+
+                with st.form("form_fechamento"):
+                    st.markdown(f"📋 **Cliente:** {cliente} | **Veículo:** {modelo_v} ({placa})")
+                    st.markdown(
+                        f"💰 **Total a Receber:** <span style='font-size:18pt; color:#2f855a; font-weight:bold;'>{formatar_real(valor_total)}</span>",
+                        unsafe_allow_html=True)
+
+                    forma_pagto = st.selectbox("Forma de Recebimento:",
+                                               ["Pix", "Dinheiro", "Cartão de Débito", "Cartão de Crédito"])
+
+                    confirmar_baixa = st.form_submit_button("✅ Efetivar e Atualizar Caixa (Gera Backup)",
+                                                            use_container_width=True)
+
+                    if confirmar_baixa:
+                        arquivo_bkp = realizar_backup()
+
+                        conn = sqlite3.connect("oficina.db")
+                        cursor = conn.cursor()
+                        data_pago = datetime.now().strftime("%d/%m/%Y %H:%M")
+                        cursor.execute("""
+                            UPDATE ordens_servico 
+                            SET status = 'Finalizado', forma_pagamento = ?, status_pagamento = 'Pago', data_pagamento = ? 
+                            WHERE id = ?
+                        """, (forma_pagto, data_pago, id_os))
+                        conn.commit()
+                        conn.close()
+
+                        st.session_state['pagamento_sucesso'] = {
+                            "id_os": id_os, "cliente": cliente, "placa": placa, "modelo": modelo_v,
+                            "m_obra": m_obra, "v_pecas": v_pecas, "total": valor_total, "forma": forma_pagto,
+                            "whats": whats_cliente, "backup": arquivo_bkp
+                        }
+                        st.rerun()
+
+            if 'pagamento_sucesso' in st.session_state:
+                dados = st.session_state['pagamento_sucesso']
+
+                st.success(f"✅ O.S. N° {dados['id_os']} marcada como PAGA! Caixa Alimentado com sucesso.")
+                if dados['backup']:
+                    st.toast(f"💾 Cópia de Segurança salva em: {dados['backup']}", icon="💾")
+
+                mensagem_recibo = (
+                    f"🧾 *COMPROVANTE DE PAGAMENTO - OFICINA PRO*\n\n"
+                    f"Prezado(a) *{dados['cliente']}*, seu pagamento foi processado com sucesso!\n\n"
+                    f"📌 *DETALHES DA ORDEM N° {dados['id_os']}*\n"
+                    f"🚗 Veículo: {dados['modelo']} (Placa: {dados['placa']})\n"
+                    f"🔧 Mão de Obra: {formatar_real(dados['m_obra'])}\n"
+                    f"📦 Peças Aplicadas: {formatar_real(dados['v_pecas'])}\n"
+                    f"----------------------------------\n"
+                    f"💰 *VALOR TOTAL RECEBIDO: {formatar_real(dados['total'])}*\n"
+                    f"💳 Forma de Pagamento: *{dados['forma']}*\n\n"
+                    f"Obrigado pela preferência e confiança! 👍"
+                )
+
+                fone_limpo = "".join([c for c in str(dados['whats']) if c.isdigit()])
+                if fone_limpo and not fone_limpo.startswith("55") and len(fone_limpo) >= 10:
+                    fone_limpo = "55" + fone_limpo
+
+                texto_codificado = urllib.parse.quote(mensagem_recibo)
+                link_whatsapp = f"https://wa.me/{fone_limpo}?text={texto_codificado}"
+
+                st.markdown("### 🔑 Enviar Comprovante ao Cliente:")
+
+                st.markdown(f"""
+                    <a href="{link_whatsapp}" target="_blank" style="text-decoration: none;">
+                        <div style="background-color: #25d366; color: white; padding: 12px 20px; border-radius: 6px; font-weight: bold; text-align: center; font-size: 13pt; margin-bottom: 15px;">
+                            💬 Enviar Recibo e Resumo por WhatsApp ({dados['whats']})
+                        </div>
+                    </a>
+                """, unsafe_allow_html=True)
+
+                if st.button("📊 Finalizar e Ir Para o Caixa", use_container_width=True, type="primary"):
+                    st.session_state.pop('pagamento_sucesso', None)
+                    st.session_state['menu_ativo'] = "📊 Relatórios"
+                    st.rerun()
+
+
+    # ==========================================
+    # ABA: PAINEL DE CONTROLE E RELATÓRIOS
+    # ==========================================
+    elif menu == "📊 Relatórios":
+        st.title("📊 Fluxo de Caixa & Relatórios Gerenciais")
+
+        conn = sqlite3.connect("oficina.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT os.id, v.placa, v.nome_cliente, os.defeito_reclamado, os.valor_total, 
+                   os.status, os.data_abertura, os.forma_pagamento, os.status_pagamento
+            FROM ordens_servico os
+            JOIN veiculos v ON os.id_veiculo = v.id
+            ORDER BY os.id DESC
+        """)
         todas_os = cursor.fetchall()
-        conexao.close()
+        conn.close()
 
-        if todas_os:
-            lista_os_formatada = {f"OS #{o[0]} - {o[1]} ({o[2]})": o[0] for o in todas_os}
-            os_selecionada = st.selectbox("Selecione uma OS para Gerenciar:", list(lista_os_formatada.keys()))
-            id_os_atual = lista_os_formatada[os_selecionada]
+        # Faturamento Real por Caixa (Apenas o que está pago)
+        t_pix = sum(o[4] for o in todas_os if o[8] == "Pago" and o[7] == "Pix")
+        t_dinheiro = sum(o[4] for o in todas_os if o[8] == "Pago" and o[7] == "Dinheiro")
+        t_debito = sum(o[4] for o in todas_os if o[8] == "Pago" and o[7] == "Cartão de Débito")
+        t_credito = sum(o[4] for o in todas_os if o[8] == "Pago" and o[7] == "Cartão de Crédito")
+        t_geral = t_pix + t_dinheiro + t_debito + t_credito
 
-            st.markdown("#### ⚡ Ações Rápidas da OS")
-            col_btn1, col_btn2, col_btn3 = st.columns(3)
-            with col_btn1:
-                if st.button("🏁 Fechar OS e Gerar PDF", use_container_width=True):
-                    conexao = conectar_banco()
-                    cursor = conexao.cursor()
-                    cursor.execute('SELECT SUM(quantidade * preco_unitario) FROM itens_os WHERE os_id = ?',
-                                   (id_os_atual,))
-                    total = cursor.fetchone()[0] or 0.0
-                    cursor.execute(
-                        'UPDATE ordens_servico SET status = "Concluído", data_fim = ?, valor_total = ? WHERE id = ?',
-                        (datetime.now().strftime('%d/%m/%Y %H:%M:%S'), total, id_os_atual))
-                    conexao.commit()
-                    conexao.close()
-                    gerar_recibo_pdf(id_os_atual)
-                    st.success(f"🏁 OS #{id_os_atual} Concluída!")
-            with col_btn2:
-                if st.button("💬 Enviar Orçamento WhatsApp", use_container_width=True):
-                    enviar_whatsapp_tela(id_os_atual, "orcamento")
-            with col_btn3:
-                if st.button("🎉 Avisar Carro Pronto WhatsApp", use_container_width=True):
-                    enviar_whatsapp_tela(id_os_atual, "pronto")
+        f1, f2, f3, f4, f5 = st.columns(5)
+        with f1:
+            st.metric(label="💎 Pix", value=formatar_real(t_pix))
+        with f2:
+            st.metric(label="💵 Dinheiro", value=formatar_real(t_dinheiro))
+        with f3:
+            st.metric(label="💳 Débito", value=formatar_real(t_debito))
+        with f4:
+            st.metric(label="💳 Crédito", value=formatar_real(t_credito))
+        with f5:
+            st.metric(label="📈 Total Geral", value=formatar_real(t_geral))
 
-            st.markdown("---")
-
-            aba_lancar, aba_resumo = st.tabs(["🛠️ Adicionar Peças/Serviços", "📄 Visualizar Resumo Atual"])
-
-            with aba_lancar:
-                with st.form("form_itens"):
-                    col_it1, col_it2, col_it3, col_it4 = st.columns([2, 4, 2, 2])
-                    with col_it1:
-                        tipo_item = st.selectbox("Tipo:", ["PECA", "SERVICO"])
-                    with col_it2:
-                        desc_item = st.text_input("Descrição do Item:")
-                    with col_it3:
-                        qtd_item = st.number_input("Qtd:", min_value=1, value=1)
-                    with col_it4:
-                        preco_item = st.number_input("Preço (R$):", min_value=0.0, value=0.0)
-
-                    add_item = st.form_submit_button("➕ Incluir Item na Ordem")
-
-                if add_item and desc_item:
-                    conexao = conectar_banco()
-                    cursor = conexao.cursor()
-                    cursor.execute(
-                        'INSERT INTO itens_os (os_id, tipo, descricao, database, quantidade, preco_unitario) VALUES (?, ?, ?, ?, ?)'
-                        if False else 'INSERT INTO itens_os (os_id, tipo, descricao, quantidade, preco_unitario) VALUES (?, ?, ?, ?, ?)',
-                        (id_os_atual, tipo_item, desc_item, qtd_item, preco_item))
-                    conexao.commit()
-                    conexao.close()
-                    st.success("✅ Item adicionado!")
-
-            with aba_resumo:
-                os_dados, itens = buscar_resumo_os(id_os_atual)
-                if os_dados:
-                    st.markdown(f"**Cliente:** {os_dados[9]} | **Veículo:** {os_dados[7]} ({os_dados[8]})")
-                    st.markdown(f"**Situação Atual:** `{os_dados[3]}`")
-                    if itens:
-                        import pandas as pd
-                        df_itens = pd.DataFrame(itens, columns=["Tipo", "Descrição", "Qtd", "Preço Unitário"])
-                        st.table(df_itens)
-                    else:
-                        st.info("Nenhum item adicionado a esta OS ainda.")
-        else:
-            st.info("Nenhuma Ordem de Serviço encontrada para o seu nível de acesso.")
-
-    # --- TELA 4: RELATÓRIOS (EXCLUSIVA ADMIN) ---
-    elif opcao == "📊 Relatório Excel" and user == "admin":
-        st.subheader("Exportar Relatório de Caixa e OS (Restrito: Administrador)")
-
-        conexao = conectar_banco()
-        cursor = conexao.cursor()
-        cursor.execute(
-            'SELECT os.id, c.nome, v.modelo, os.status, os.valor_total, os.data_inicio FROM ordens_servico os JOIN veiculos v ON os.veiculo_id = v.id JOIN clientes c ON v.cliente_id = c.id')
-        dados = cursor.fetchall()
-        conexao.close()
-
-        import pandas as pd
-        df = pd.DataFrame(dados, columns=["Numero_OS", "Cliente", "Veiculo", "Status", "Valor_Total_R$", "Data_Inicio"])
-        csv = df.to_csv(index=False, sep=";").encode('utf-8-sig')
-
-        st.download_button(label="📥 Baixar Planilha para Excel", data=csv, file_name="relatorio_oficina.csv",
-                           mime="text/csv")
         st.markdown("<br>", unsafe_allow_html=True)
+        st.write("### 🔍 Histórico de Atendimentos Cadastrados")
 
-        st.markdown("#### 📋 Pré-visualização dos Dados Correntes")
-        st.dataframe(df, use_container_width=True)
+        for os_item in todas_os:
+            id_os, placa, cliente, defeito, total, status, data, f_pag, s_pag = os_item
+            tag_f = f" [{f_pag}]" if f_pag else ""
+            with st.expander(f"🛠️ O.S. N° {id_os} | {placa} - {cliente} | Pago: {s_pag}{tag_f}"):
+                st.write(f"**Data Abertura:** {data}")
+                st.write(f"**Defeito Reclamado:** {defeito}")
+                st.write(f"**Valor total:** {formatar_real(total)}")
+                st.write(f"**Status Operacional:** {status}")
 
 
 if __name__ == "__main__":
